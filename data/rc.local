@@ -1,0 +1,3 @@
+#!/bin/bash
+/data/dbus-services/dbus-invert-battery.py &
+exit 0
