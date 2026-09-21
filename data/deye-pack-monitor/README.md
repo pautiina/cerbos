@@ -1,107 +1,118 @@
 # Deye Pack Monitor for Victron Venus OS
 
-Version 0.1.0.
+Stable baseline: **v0.1.2**
 
-A passive companion service for Deye SE-G5.1 Pro-B / compatible Deye LV ESS batteries connected to a Victron GX device over SocketCAN.
+Validated on:
+- Venus OS `v3.80~53 LARGE`
+- Python 3.12.14
+- Deye SE-G5.1 Pro-B bank with 2 packs
+
+## Frozen backend baseline
+
+`deye_pack_monitor.py` v0.1.2 is the known-good backend baseline.
+
+v0.1.2 keeps the v0.1.1 Deye CAN decoder and D-Bus model unchanged.
+The only backend compatibility change is the SocketCAN / GLib watch handling:
+Venus OS LARGE can report `IO_IN | IO_ERR` (`0x9`) while the CAN socket is still
+readable. v0.1.2 drains readable CAN frames before treating the extra IO_ERR bit.
 
 ## Safety model
 
-The program **never transmits CAN frames**. There is no `send()` call and no CAN TX path in the program. It only opens a CAN RAW socket and receives existing traffic.
+The monitor is passive:
+- opens SocketCAN for receive
+- never transmits CAN
+- contains no CAN `send()` path
+- does not replace Victron `can-bus-bms`
+- deliberately does not publish `/Info/*` control paths
 
-It does **not** replace Victron `can-bus-bms` and deliberately does **not** publish `/Info/*` BMS control paths. The existing system BMS therefore remains the controlling battery for DVCC.
+The stock Victron battery service therefore remains the controlling BMS for DVCC.
 
-## What it creates
+## Dynamic pack count
 
-For each detected physical Deye pack:
+The number of physical Deye batteries is **not hard-coded**.
 
-`com.victronenergy.battery.deyepack_can0_01`
+Default:
+```sh
+MAX_PACKS="64"
+```
 
-`com.victronenergy.battery.deyepack_can0_02`
+The monitor auto-discovers sequential Deye per-pack CAN IDs and creates one service
+per detected physical pack.
 
-...and so on.
+Examples:
 
-A bank diagnostic service is also created:
+1 pack:
+```text
+com.victronenergy.battery.deyepack_can0_01
+```
 
-`com.victronenergy.deyebank_can0`
+5 packs:
+```text
+com.victronenergy.battery.deyepack_can0_01
+...
+com.victronenergy.battery.deyepack_can0_05
+```
 
-Pack discovery is dynamic; the number of batteries is not hard-coded.
+10 packs:
+```text
+com.victronenergy.battery.deyepack_can0_01
+...
+com.victronenergy.battery.deyepack_can0_10
+```
 
-## Data per pack
+Bank diagnostics:
+```text
+com.victronenergy.deyebank_can0
+```
 
-Standard Venus battery paths:
+## Per-pack data
 
-- Voltage, current and calculated power
-- SOC / SOH
-- Min/max cell voltage
-- Min/max temperature
-- Serial number
-- Firmware / hardware marker
-- Charge cycles
-- Charged / discharged energy
+Standard / common Venus paths:
+- voltage/current/power
+- SOC/SOH
+- min/max cell voltage
+- min/max cell temperature
+- serial
+- firmware/hardware numeric values
+- charge cycles
+- charged/discharged energy
 
-Deye-specific diagnostic paths include:
-
-- firmware marker, hardware marker, revision text
-- cell delta
-- MOS and auxiliary/heater temperature
-- pack charge/discharge current limits
-- work mode and fault level
+Deye diagnostics:
+- `/Diagnostics/Deye/FirmwareMarker`
+- `/Diagnostics/Deye/HardwareMarker`
+- `/Diagnostics/Deye/Revision`
+- `/Diagnostics/Deye/CellDelta`
+- MOS / auxiliary temperature
+- pack CCL / DCL
+- work mode
+- fault level/text
 - balancing bitmap
-- charge/discharge/precharge/heater MOS states
+- charge/discharge/precharge/heater MOS
 - parallel-finished state
-- historical fault counters
+- fault counters
 - last-seen timer
-- raw CAN payload for every decoded per-pack frame
+- raw decoded CAN payloads
 
 ## Bank diagnostics
 
-The bank service includes system CAN data and comparisons:
-
-- detected / online pack count
+Includes:
+- PackCount / OnlinePackCount
 - firmware mismatch
 - hardware mismatch
 - system current
-- sum of individual pack currents
-- current mismatch + warning
+- sum of physical pack currents
+- mismatch value and warning
 - system SOC/SOH/capacity
-- module count and communication status from 0x364
-- limits and cell extrema
+- module count/status
+- charge/discharge limits
+- cell extrema and delta
 - raw system frames
-
-## Installation
-
-Copy the whole directory to the GX device:
-
-```sh
-scp -r deye-pack-monitor root@CERBO:/data/
-```
-
-Then:
-
-```sh
-ssh root@CERBO
-/data/deye-pack-monitor/install.sh
-```
-
-Check:
-
-```sh
-/data/deye-pack-monitor/status.sh
-```
-
-or:
-
-```sh
-svstat /service/deye-pack-monitor
-tail -f /var/log/deye-pack-monitor/current
-```
 
 ## Configuration
 
-Edit `/data/deye-pack-monitor/config.sh`.
+`/data/deye-pack-monitor/config.sh`
 
 Defaults:
-
 ```sh
 CAN_IFACE="can0"
 DEVICE_INSTANCE_BASE="800"
@@ -112,47 +123,89 @@ CURRENT_MISMATCH_THRESHOLD="5"
 DEBUG="0"
 ```
 
-Restart after changes:
+## Installation
 
-```sh
-svc -t /service/deye-pack-monitor
+Extract/copy the complete directory as:
+
+```text
+/data/deye-pack-monitor
 ```
 
-## Useful D-Bus commands
-
-Whole second battery:
+Then run:
 
 ```sh
-dbus -y com.victronenergy.battery.deyepack_can0_02 / GetValue
+/data/deye-pack-monitor/install.sh
 ```
 
-Exact firmware marker:
+The installer:
+1. validates Venus Python/D-Bus dependencies;
+2. creates `/service/deye-pack-monitor`;
+3. adds a persistent `/data/rc.local` hook;
+4. places that hook **before an existing `exit 0`**;
+5. starts the supervisor service.
+
+## Verification
 
 ```sh
-dbus -y com.victronenergy.battery.deyepack_can0_02 /Diagnostics/Deye/FirmwareMarker GetValue
+svstat /service/deye-pack-monitor
+dbus -y | grep -E 'deyepack|deyebank'
 ```
 
-Serial:
-
+Bank:
 ```sh
-dbus -y com.victronenergy.battery.deyepack_can0_02 /Serial GetValue
+dbus -y com.victronenergy.deyebank_can0 /Connected GetValue
+dbus -y com.victronenergy.deyebank_can0 /PackCount GetValue
+dbus -y com.victronenergy.deyebank_can0 /OnlinePackCount GetValue
 ```
 
-Bank diagnostics:
-
+Pack firmware:
 ```sh
-dbus -y com.victronenergy.deyebank_can0 / GetValue
+dbus -y com.victronenergy.battery.deyepack_can0_02 \
+  /Diagnostics/Deye/FirmwareMarker GetValue
 ```
 
-## Notes about firmware/hardware fields
-
-The standard `/FirmwareVersion` and `/HardwareVersion` D-Bus values are numeric because that is the Victron API convention. Their `GetText` form returns the Deye marker. The exact marker is also available as a string under `/Diagnostics/Deye/FirmwareMarker` and `/Diagnostics/Deye/HardwareMarker`.
-
-Example:
-
+Status helper:
 ```sh
-dbus -y com.victronenergy.battery.deyepack_can0_01 /FirmwareVersion GetText
+/data/deye-pack-monitor/status.sh
 ```
+
+Log:
+```sh
+tail -f /var/log/deye-pack-monitor/current
+```
+
+## Known validated result
+
+On the reference 2-pack bank under Venus OS v3.80~53 LARGE:
+```text
+com.victronenergy.battery.deyepack_can0_01
+com.victronenergy.battery.deyepack_can0_02
+com.victronenergy.deyebank_can0
+
+Connected       = 1
+PackCount       = 2
+OnlinePackCount = 2
+```
+
+Pack #2 firmware marker:
+```text
+1602
+```
+
+## Version history
+
+### v0.1.2
+- SocketCAN/GLib compatibility fix for readable condition `IO_IN|IO_ERR (0x9)`.
+- Installer infrastructure fix: persistent service hook is placed before `exit 0`
+  in `/data/rc.local`.
+- Deye decoder and D-Bus schema unchanged from v0.1.1.
+
+### v0.1.1
+- One private D-Bus connection per exported `VeDbusService`, preventing `/`
+  object-path conflicts between bank and per-pack services.
+
+### v0.1.0
+- Initial passive multi-pack monitor.
 
 ## Removal
 
@@ -160,9 +213,5 @@ dbus -y com.victronenergy.battery.deyepack_can0_01 /FirmwareVersion GetText
 /data/deye-pack-monitor/uninstall.sh
 ```
 
-The files in `/data/deye-pack-monitor` are intentionally left in place.
-
-
-## v0.1.1
-
-Fix: use one private D-Bus connection per exported VeDbusService. This avoids root object-path conflicts when the bank service and multiple per-pack services coexist in the same Python process.
+The uninstall script removes supervision/autostart but intentionally leaves the
+files under `/data/deye-pack-monitor`.
