@@ -22,7 +22,7 @@ import sys
 import time
 from typing import Dict, Optional
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 PRODUCT_ID = 0xFFFF
 
 # Venus OS ships velib_python here. Keep a couple of fallbacks for variants.
@@ -539,9 +539,38 @@ class Monitor:
         return pack
 
     def _on_can_ready(self, source, condition):
-        if condition & (GLib.IO_ERR | GLib.IO_HUP):
-            LOG.error("SocketCAN watch reported condition 0x%x", int(condition))
+        """Drain readable CAN frames even when GLib also reports IO_ERR.
+
+        Venus OS LARGE / newer GLib may report SocketCAN readiness as
+        IO_IN|IO_ERR (0x9).  The socket is still readable in that state.
+        Treating IO_ERR as fatal before recv() causes a busy loop and drops
+        all CAN frames, so IO_IN always takes precedence here.
+        """
+        cond = int(condition)
+        nval = getattr(GLib, "IO_NVAL", 0)
+        fatal_mask = GLib.IO_HUP | nval
+
+        # If there is no readable data, only then handle pure error/fatal states.
+        if not (condition & GLib.IO_IN):
+            if condition & fatal_mask:
+                LOG.error("SocketCAN watch reported fatal condition 0x%x", cond)
+                return False
+            if condition & GLib.IO_ERR:
+                try:
+                    err = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                except OSError as exc:
+                    LOG.warning("SocketCAN SO_ERROR query failed: %s", exc)
+                    err = 0
+                if err:
+                    LOG.warning(
+                        "SocketCAN watch reported IO_ERR 0x%x, SO_ERROR=%d (%s)",
+                        cond,
+                        err,
+                        os.strerror(err),
+                    )
             return True
+
+        # IO_IN wins: drain all available CAN frames first.
         while True:
             try:
                 frame = self.sock.recv(CAN_FRAME.size)
@@ -550,11 +579,17 @@ class Monitor:
             except OSError as exc:
                 LOG.exception("SocketCAN recv failed: %s", exc)
                 break
+
             if len(frame) != CAN_FRAME.size:
                 continue
+
             can_id_raw, dlc, payload = CAN_FRAME.unpack(frame)
+
+            # Ignore extended/RTR/error CAN frames; this monitor only consumes
+            # normal 11-bit Deye data frames.
             if can_id_raw & (CAN_EFF_FLAG | CAN_RTR_FLAG | CAN_ERR_FLAG):
                 continue
+
             can_id = can_id_raw & CAN_SFF_MASK
             data = payload[: min(dlc, 8)]
 
@@ -565,6 +600,28 @@ class Monitor:
             if ident is not None:
                 idx, kind = ident
                 self._ensure_pack(idx).update_frame(kind, data)
+
+        # A simultaneous IO_ERR on SocketCAN is non-fatal when frames were
+        # readable.  Check SO_ERROR, but do not discard valid traffic.
+        if condition & GLib.IO_ERR:
+            try:
+                err = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            except OSError:
+                err = 0
+            if err:
+                LOG.warning(
+                    "SocketCAN readable with IO_ERR 0x%x, SO_ERROR=%d (%s)",
+                    cond,
+                    err,
+                    os.strerror(err),
+                )
+
+        # HUP/NVAL after draining is treated as fatal so supervisor can restart
+        # the process rather than leaving a dead watch installed.
+        if condition & fatal_mask:
+            LOG.error("SocketCAN watch reported fatal condition 0x%x after recv", cond)
+            return False
+
         return True
 
     def _periodic(self):
