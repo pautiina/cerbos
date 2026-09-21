@@ -1,3 +1,11 @@
 #!/bin/bash
 /data/dbus-services/dbus-invert-battery.py &
+
+# BEGIN deye-pack-monitor
+if [ -d /data/deye-pack-monitor/service ] && [ ! -e /service/deye-pack-monitor ]; then
+    ln -s /data/deye-pack-monitor/service /service/deye-pack-monitor
+fi
+# END deye-pack-monitor
+
+
 exit 0
