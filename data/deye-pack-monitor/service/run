@@ -1,0 +1,18 @@
+#!/bin/sh
+exec 2>&1
+
+APP=/data/deye-pack-monitor
+[ -r "$APP/config.sh" ] && . "$APP/config.sh"
+
+CAN_IFACE=${CAN_IFACE:-can0}
+DEVICE_INSTANCE_BASE=${DEVICE_INSTANCE_BASE:-800}
+PACK_TIMEOUT=${PACK_TIMEOUT:-8}
+SYSTEM_TIMEOUT=${SYSTEM_TIMEOUT:-8}
+MAX_PACKS=${MAX_PACKS:-64}
+CURRENT_MISMATCH_THRESHOLD=${CURRENT_MISMATCH_THRESHOLD:-5}
+DEBUG=${DEBUG:-0}
+
+ARGS="--interface $CAN_IFACE --instance-base $DEVICE_INSTANCE_BASE --pack-timeout $PACK_TIMEOUT --system-timeout $SYSTEM_TIMEOUT --max-packs $MAX_PACKS --current-mismatch-threshold $CURRENT_MISMATCH_THRESHOLD"
+[ "$DEBUG" = "1" ] && ARGS="$ARGS --debug"
+
+exec /usr/bin/python3 -u "$APP/deye_pack_monitor.py" $ARGS

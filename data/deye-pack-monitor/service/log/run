@@ -1,0 +1,4 @@
+#!/bin/sh
+LOGDIR=/var/log/deye-pack-monitor
+mkdir -p "$LOGDIR"
+exec multilog t s250000 n5 "$LOGDIR"
